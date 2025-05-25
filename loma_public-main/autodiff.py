@@ -5,6 +5,7 @@ import irmutator
 import forward_diff
 import reverse_diff
 import irvisitor
+import kan_forward_diff  # Import the KAN forward differentiation module
 
 def type_to_diff_type(diff_structs : dict[str, loma_ir.Struct],
                       t : loma_ir.type) -> loma_ir.type:
@@ -255,11 +256,17 @@ def differentiate(structs : dict[str, loma_ir.Struct],
     # Map functions to their forward/reverse versions
     func_to_fwd = dict()
     func_to_rev = dict()
+    # Track KAN functions for special handling
+    kan_funcs = dict()
+    
     for f in funcs.values():
         if isinstance(f, loma_ir.ForwardDiff):
             func_to_fwd[f.primal_func] = f.id
         elif isinstance(f, loma_ir.ReverseDiff):
             func_to_rev[f.primal_func] = f.id
+        # Check if this is a KAN function by checking for a special attribute or naming convention
+        elif hasattr(f, 'is_kan_network') or (isinstance(f, loma_ir.FunctionDef) and f.id.startswith('kan_')):
+            kan_funcs[f.id] = f
 
     # Traverse: for each function that requires forward diff
     # recursively having all called functions to require forward diff
@@ -296,8 +303,44 @@ def differentiate(structs : dict[str, loma_ir.Struct],
                 visited_func.add(f)
                 func_stack.append(f)
 
+    # Special handling for KAN functions that need differentiation
+    for kan_id, kan_func in kan_funcs.items():
+        if kan_id in func_to_fwd:
+            # Extract KAN network parameters
+            # In a real implementation, we would need a way to store and retrieve these parameters
+            # For now, we'll just use default values or extract from function attributes if available
+            input_size = getattr(kan_func, 'input_size', 2)  # Default to 2 inputs
+            output_size = getattr(kan_func, 'output_size', 1)  # Default to 1 output
+            hidden_sizes = getattr(kan_func, 'hidden_sizes', [10])  # Default to one hidden layer with 10 nodes
+            nonlinearities = getattr(kan_func, 'nonlinearities', None)  # Use default in create_kan_forward_diff
+            weights = getattr(kan_func, 'weights', None)  # Use default in create_kan_forward_diff
+            alpha_weights = getattr(kan_func, 'alpha_weights', None)  # Use default in create_kan_forward_diff
+            
+            # Create KAN forward differentiation function
+            fwd_diff_func = kan_forward_diff.create_kan_forward_diff(
+                func_to_fwd[kan_id],
+                structs,
+                funcs,
+                diff_structs,
+                kan_id,
+                input_size,
+                output_size,
+                hidden_sizes,
+                nonlinearities,
+                weights,
+                alpha_weights
+            )
+            funcs[func_to_fwd[kan_id]] = fwd_diff_func
+            import pretty_print
+            print(f'\nKAN Forward differentiation of function {kan_id}:')
+            print(pretty_print.loma_to_str(fwd_diff_func))
+
     for f in funcs.values():
         if isinstance(f, loma_ir.ForwardDiff):
+            # Skip KAN functions that have already been handled
+            if f.primal_func in kan_funcs:
+                continue
+                
             fwd_diff_func = forward_diff.forward_diff(\
                 f.id, structs, funcs, diff_structs,
                 funcs[f.primal_func], func_to_fwd)
