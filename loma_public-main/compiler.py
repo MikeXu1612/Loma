@@ -310,11 +310,15 @@ static float cl_atomic_add(volatile __global float *p, float val) {
     # load the dynamic library
     if target == 'c' or target == 'ispc':
         lib = CDLL(os.path.join(os.getcwd(), output_filename))
+        builtin_math_funcs = {"sin", "cos", "sqrt", "pow", "exp", "log", "tanh", "int2float", "float2int"}
         for f in funcs.values():
             if target == 'ispc':
                 # only process SIMD functions
                 if not f.is_simd:
                     continue
+            # Skip loading built-in math functions from the library
+            if f.id in builtin_math_funcs:
+                continue
             c_func = getattr(lib, f.id)
             argtypes = [loma_to_ctypes_type(arg, ctypes_structs) for arg in f.args]
             # for simd functions, the last argument is the number of threads

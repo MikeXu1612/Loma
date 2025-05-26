@@ -261,8 +261,12 @@ def codegen_c(structs : dict[str, loma_ir.Struct],
                 code += f'\t{type_to_string(m.t)} {m.id};\n'
         code += f'}} {s.id};\n'
 
-    # Forward declaration of functions
+    # Forward declaration of functions (skip built-in functions)
+    builtin_math_funcs = {"sin", "cos", "sqrt", "pow", "exp", "log", "tanh", "int2float", "float2int"}
     for f in funcs.values():
+        # Skip forward declarations for built-in math functions
+        if f.id in builtin_math_funcs:
+            continue
         code += f'{type_to_string(f.ret_type)} {f.id}('
         for i, arg in enumerate(f.args):
             if i > 0:
@@ -275,6 +279,9 @@ def codegen_c(structs : dict[str, loma_ir.Struct],
         code += ');\n'
 
     for f in funcs.values():
+        # Skip generating function bodies for built-in math functions
+        if f.id in builtin_math_funcs:
+            continue
         cg = CCodegenVisitor(funcs)
         cg.visit_function(f)
         code += cg.code
