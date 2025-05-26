@@ -3,7 +3,7 @@ ir.generate_asdl_file()
 import _asdl.loma as loma_ir
 import irmutator
 import autodiff
-import kan_utils
+from . import kan_utils
 import random
 import string
 

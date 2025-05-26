@@ -5,7 +5,7 @@ import irmutator
 import forward_diff
 import reverse_diff
 import irvisitor
-import kan_forward_diff  # Import the KAN forward differentiation module
+from kan_modules import kan_forward_diff  # Import the KAN forward differentiation module
 
 def type_to_diff_type(diff_structs : dict[str, loma_ir.Struct],
                       t : loma_ir.type) -> loma_ir.type:

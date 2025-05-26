@@ -116,6 +116,8 @@ def visit_FunctionDef(node) -> loma_ir.FunctionDef:
     node_args = node.args
     assert node_args.vararg is None
     assert node_args.kwarg is None
+    print(node)
+    print(node.args)
     args = [loma_ir.Arg(arg.arg,
                         annotation_to_type(arg.annotation),
                         annotation_to_inout(arg)) for arg in node_args.args]

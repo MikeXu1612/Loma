@@ -9,8 +9,8 @@ import error
 import math
 import numpy as np
 import unittest
-from kan import KANLayer, KANNetwork, create_kan_in_loma
-import kan_utils
+from kan_modules import kan_utils
+from kan_modules.kan import KANLayer, KANNetwork, create_kan_in_loma
 
 epsilon = 1e-4
 

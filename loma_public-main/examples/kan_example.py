@@ -6,8 +6,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import compiler
 import parser
-from kan import create_kan_in_loma, KANNetwork
-import kan_forward_diff
+from kan_modules.kan import create_kan_in_loma, KANNetwork
+from kan_modules import kan_forward_diff
 import numpy as np
 
 def kan_example():
@@ -91,19 +91,18 @@ def kan_example():
     
     # Generate Loma code for the functions
     loma_code = """
-    class _dfloat:
-        val: float
-        dval: float
-    
-    def make__dfloat(val: In[float], dval: In[float]) -> _dfloat:
-        ret: _dfloat
-        ret.val = val
-        ret.dval = dval
-        return ret
-    
-    def kan_network(x0: In[float], x1: In[float]) -> float:
-        // This will be replaced by our generated function
-        return 0.0
+class _dfloat:
+    val: float
+    dval: float
+
+def make__dfloat(val: In[float], dval: In[float]) -> _dfloat:
+    ret: _dfloat
+    ret.val = val
+    ret.dval = dval
+    return ret
+
+def kan_network(x0: In[float], x1: In[float]) -> float:
+    return 0.0
     """
     
     # Compile the code
