@@ -188,6 +188,17 @@ def create_elu_derivative_ir(s_var, body=None, var_name=None, alpha_var=None, **
         return var
     return loma_ir.BinaryOp(loma_ir.Greater(), s_var, loma_ir.ConstFloat(0.0), t=loma_ir.Float())
 
+def register_builtin_math_funcs(funcs: dict[str, loma_ir.FunctionDef]):
+    for fname in ["tanh", "exp", "log"]:
+        if fname not in funcs:
+            arg = loma_ir.Arg("x", loma_ir.Float(), loma_ir.In())
+            funcs[fname] = loma_ir.FunctionDef(
+                id=fname,
+                args=[arg],
+                body=[],
+                is_simd=False,
+                ret_type=loma_ir.Float()
+            )
 
 # Map of activation function IR creators
 ACTIVATION_IR_CREATORS = {

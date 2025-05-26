@@ -93,17 +93,69 @@ def compile(loma_code : str,
     # first parse the frontend code
     try:
         structs, funcs = parser.parse(loma_code)
-        # next figure out the types related to differentiation
+        # 在 parser.parse() 成功后判断是否需要注入 kan_layer
+        if "kan_layer" not in funcs:
+            inferred_input_size = None
+
+            for func in funcs.values():
+                for stmt in func.body:
+                    call = None
+                    if isinstance(stmt, loma_ir.Assign) and isinstance(stmt.val, loma_ir.Call):
+                        call = stmt.val
+                    elif isinstance(stmt, loma_ir.Return) and isinstance(stmt.val, loma_ir.Call):
+                        call = stmt.val
+
+                    if call and call.id == "kan_layer":
+                        inferred_input_size = len(call.args)
+                        break
+                if inferred_input_size is not None:
+                    break
+
+            
+            print("=== FUNC STRUCTURE ===")
+            for f in funcs.values():
+                print(f"Function: {f.id}")
+                for stmt in f.body:
+                    print("  ", stmt)
+            print("======================")
+
+
+            if inferred_input_size is None:
+                raise Exception("Cannot infer input size for kan_layer. Please define it explicitly or ensure it's called in code.")
+
+            from kan_modules.kan import make_kan_layer
+            func_def = make_kan_layer(
+                name="kan_layer",
+                input_size=inferred_input_size,
+                output_size=1,
+                hidden_sizes=[3],
+                num_nonlinearities=6
+            )
+            funcs[func_def.id] = func_def
+
+        builtin_funcs = {
+                            "tanh": loma_ir.FunctionDef("tanh", [loma_ir.Arg("x", loma_ir.Float(), loma_ir.In())], [], False, loma_ir.Float()),
+                            "exp": loma_ir.FunctionDef("exp", [loma_ir.Arg("x", loma_ir.Float(), loma_ir.In())], [], False, loma_ir.Float()),
+                            "log": loma_ir.FunctionDef("log", [loma_ir.Arg("x", loma_ir.Float(), loma_ir.In())], [], False, loma_ir.Float()),
+                            "max": loma_ir.FunctionDef("max", [loma_ir.Arg("a", loma_ir.Float(), loma_ir.In()), loma_ir.Arg("b", loma_ir.Float(), loma_ir.In())], [], False, loma_ir.Float())
+                        }
+
+
+        for name, defn in builtin_funcs.items():
+            if name not in funcs:
+                funcs[name] = defn
+
         structs, diff_structs, funcs = autodiff.resolve_diff_types(structs, funcs)
-        # next check if the resulting code is valid, barring from the derivative code
-        check.check_ir(structs, diff_structs, funcs, check_diff = False)
+        check.check_ir(structs, diff_structs, funcs, check_diff=False)
+
     except error.UserError as e:
         if print_error:
             print('[Error] error found before automatic differentiation:')
             print(e.to_string())
         raise e
-    # next actually differentiate the functions
+    
     funcs = autodiff.differentiate(structs, diff_structs, funcs)
+
     try:
         # next check if the derivative code is valid
         check.check_ir(structs, diff_structs, funcs, check_diff = True)

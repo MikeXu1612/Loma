@@ -385,3 +385,15 @@ def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_
         False,  # is_simd
         loma_ir.Float() if output_size == 1 else None,  # ret_type
     ) 
+
+def make_kan_layer(name="kan_layer", input_size=2, output_size=1, hidden_sizes=[], num_nonlinearities=3):
+    return create_kan_in_loma(
+        func_id=name,
+        input_size=input_size,
+        output_size=output_size,
+        hidden_sizes=hidden_sizes,
+        num_nonlinearities=num_nonlinearities
+    )
+
+def injectable_kan_layer():
+    return make_kan_layer(name="kan_layer", input_size=2, output_size=1, hidden_sizes=[3], num_nonlinearities=6)
