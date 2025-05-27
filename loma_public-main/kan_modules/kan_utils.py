@@ -199,6 +199,18 @@ def register_builtin_math_funcs(funcs: dict[str, loma_ir.FunctionDef]):
                 is_simd=False,
                 ret_type=loma_ir.Float()
             )
+    
+    # Add max function for ReLU and other activations
+    if "max" not in funcs:
+        arg1 = loma_ir.Arg("a", loma_ir.Float(), loma_ir.In())
+        arg2 = loma_ir.Arg("b", loma_ir.Float(), loma_ir.In())
+        funcs["max"] = loma_ir.FunctionDef(
+            id="max",
+            args=[arg1, arg2],
+            body=[],
+            is_simd=False,
+            ret_type=loma_ir.Float()
+        )
 
 # Map of activation function IR creators
 ACTIVATION_IR_CREATORS = {

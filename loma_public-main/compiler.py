@@ -115,8 +115,11 @@ def compile(loma_code : str,
             print("=== FUNC STRUCTURE ===")
             for f in funcs.values():
                 print(f"Function: {f.id}")
-                for stmt in f.body:
-                    print("  ", stmt)
+                if hasattr(f, 'body'):
+                    for stmt in f.body:
+                        print("  ", stmt)
+                else:
+                    print(f"  {type(f).__name__}")
             print("======================")
 
 
