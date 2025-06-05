@@ -2,6 +2,7 @@ import ir
 ir.generate_asdl_file()
 import _asdl.loma as loma_ir
 import itertools
+from kan_modules.kan import make_kan_layer, parse_config_dict
 
 def flatten(nested_list : list):
     # recursively flatten a nested list
@@ -11,9 +12,11 @@ def flatten(nested_list : list):
         return flatten(nested_list[0]) + flatten(nested_list[1:])
     else:
         return nested_list[:1] + flatten(nested_list[1:])
+    
 
 class IRMutator:
-    """ Visitor pattern: we use IRMutator to take a loma IR code,
+    """ 
+        Visitor pattern: we use IRMutator to take a loma IR code,
         and mutate the code into something else. 
         To use this class, you should inherit IRMutator, and define
         your own mutate functions to do the transform.
@@ -274,3 +277,46 @@ class IRMutator:
             [self.mutate_expr(arg) for arg in node.args],
             lineno = node.lineno,
             t = node.t)
+    
+class InjectKAN(IRMutator):
+    def __init__(self):
+        super().__init__()
+        self.generated_funcs = {}
+        self.counter = 0
+
+    def extract_const_int(self,node):
+        assert isinstance(node, loma_ir.ConstInt), f"Expected ConstInt but got {type(node).__name__}"
+        return node.val
+
+    def extract_int_list(self,node):
+        assert isinstance(node, loma_ir.Call) and node.id == "list", "Expected [int] literal"
+        return [self.extract_const_int(e) for e in node.args]
+
+
+    def mutate_call(self, node):
+        if node.id != "kan":
+            return super().mutate_call(node)
+
+        if len(node.args) != 5:
+            raise ValueError("kan(...) must be called as: kan(X, input_size, output_size, hidden_sizes, num_nonlinearities)")
+
+        input_arg = self.mutate_expr(node.args[0])
+        input_size = self.extract_const_int(node.args[1])
+        output_size = self.extract_const_int(node.args[2])
+        hidden_sizes = self.extract_int_list(node.args[3])
+        num_nonlinearities = self.extract_const_int(node.args[4])
+
+        func_name = f"kan_layer_{self.counter}"
+        self.counter += 1
+
+        if func_name not in self.generated_funcs:
+            func_def = make_kan_layer(
+                name=func_name,
+                input_size=input_size,
+                output_size=output_size,
+                hidden_sizes=hidden_sizes,
+                num_nonlinearities=num_nonlinearities
+            )
+            self.generated_funcs[func_name] = func_def
+
+        return loma_ir.Call(func_name, [input_arg], t=node.t, lineno=node.lineno)

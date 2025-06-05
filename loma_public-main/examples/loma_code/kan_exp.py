@@ -1,2 +1,2 @@
-def kan_network(x0: In[float], x1: In[float]) -> float:
-    return kan_layer(x0, x1)
+def kan_network(X: In[Array[float, 2]]) -> float:
+    return kan(X, 2, 1, [3], 6)

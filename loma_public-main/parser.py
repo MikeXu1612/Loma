@@ -305,10 +305,15 @@ def visit_expr(node) -> loma_ir.expr:
             right = visit_expr(node.values[1])
             return loma_ir.BinaryOp(op, left, right, lineno = node.lineno)
         case ast.Call():
-            assert type(node.func) == ast.Name
-            return loma_ir.Call(node.func.id,
-                                [visit_expr(arg) for arg in node.args],
-                                lineno = node.lineno)
+            assert isinstance(node.func, ast.Name)
+            args = [visit_expr(arg) for arg in node.args]
+            return loma_ir.Call(node.func.id, args, lineno=node.lineno)
+
+        case ast.List():
+            return loma_ir.Call("list", [visit_expr(e) for e in node.elts], lineno=node.lineno)
+
+
+
         case None:
             return None
         case _:

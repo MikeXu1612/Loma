@@ -24,7 +24,10 @@ if __name__ == '__main__':
 
     # Test the LOMA-compiled KAN function
     x0, x1 = 1.0, 2.0
-    result = f(x0, x1)
+    arr_type = ctypes.c_float * 2
+    input_array = arr_type(x0, x1)
+    result = f(input_array)
+
     print(f"KAN result from LOMA for inputs ({x0}, {x1}): {result}")
 
     # NumPy reference implementation (same weights as in loma_code/kan_example.py)

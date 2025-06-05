@@ -1,10 +1,27 @@
 import ir
 ir.generate_asdl_file()
 import _asdl.loma as loma_ir
-import irmutator
 import autodiff
 import numpy as np
 import random
+
+def parse_config_dict(dict_node):
+    """解析 loma_ir.Dict 为 Python dict"""
+    assert isinstance(dict_node, loma_ir.Dict)
+    config = {}
+    for k, v in zip(dict_node.keys, dict_node.values):
+        assert isinstance(k, loma_ir.ConstStr)
+        key = k.val
+        if isinstance(v, loma_ir.ConstInt):
+            config[key] = v.val
+        elif isinstance(v, loma_ir.ConstFloat):
+            config[key] = v.val
+        elif isinstance(v, loma_ir.ArrayLiteral):
+            config[key] = [e.val for e in v.elements if isinstance(e, loma_ir.ConstInt)]
+        else:
+            raise ValueError(f"Unsupported config value type: {type(v)}")
+    return config
+
 
 class KANLayer:
     """
@@ -144,17 +161,21 @@ def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_
     layer_sizes = [input_size] + hidden_sizes + [output_size]
     
     # Create arguments for the function
-    args = []
-    for i in range(input_size):
-        args.append(loma_ir.Arg(f"x{i}", loma_ir.Float(), loma_ir.In()))
+    args = [
+        loma_ir.Arg("X", loma_ir.Array(loma_ir.Float(), static_size=input_size), loma_ir.In())
+    ]
+
     
     # Create body of the function
     body = []
     
     # Declare variables for inputs
-    input_vars = []
-    for i in range(input_size):
-        input_vars.append(loma_ir.Var(f"x{i}", t=loma_ir.Float()))
+    X = loma_ir.Var("X", t=loma_ir.Array(loma_ir.Float(), input_size))
+    input_vars = [
+        loma_ir.ArrayAccess(X, loma_ir.ConstInt(i), t=loma_ir.Float())
+        for i in range(input_size)
+    ]
+
     
     # Process each layer
     prev_layer_outputs = input_vars
