@@ -17,6 +17,7 @@ def kan_reverse_diff_pass(diff_func_id,
                           alpha_weights):
     """
     Create a reverse differentiation function for a KAN network
+    Following the mathematical formulas from the KAN paper for proper gradient computation
     
     Args:
         diff_func_id: The ID of the differentiated function to create
@@ -58,7 +59,7 @@ def kan_reverse_diff_pass(diff_func_id,
     # Forward pass: compute all intermediate values and store them
     all_s_vars = []  # Store all linear combinations s_i^(l)
     all_y_vars = []  # Store all layer outputs y_i^(l)
-    all_nonlinear_vars = []  # Store all nonlinearity outputs
+    all_phi_vars = []  # Store all individual nonlinearity outputs φ_q(s_i^(l))
     
     prev_layer_outputs = input_vars
     
@@ -68,7 +69,7 @@ def kan_reverse_diff_pass(diff_func_id,
         
         layer_s_vars = []
         layer_y_vars = []
-        layer_nonlinear_vars = []
+        layer_phi_vars = []
         
         for i in range(next_layer_size):
             # Compute linear combination s_i^(l)
@@ -101,34 +102,36 @@ def kan_reverse_diff_pass(diff_func_id,
             
             layer_s_vars.append(s_var)
             
-            # Apply nonlinearities and combine with alpha weights
+            # Apply nonlinearities and store individual outputs
+            node_phi_vars = []
+            
+            # Store individual nonlinearity outputs φ_q(s_i^(l))
+            for q, nonlinearity_type in enumerate(nonlinearities):
+                # Apply nonlinearity q to s_i
+                phi_var_name = f"phi_{l}_{i}_{q}"
+                phi_output = kan_utils.apply_nonlinearity(
+                    nonlinearity_type, 
+                    s_var, 
+                    body, 
+                    phi_var_name
+                )
+                node_phi_vars.append(phi_output)
+            
+            # Compute y_i^(l) = sum over q of (alpha_i^{q,l} * φ_q(s_i^(l)))
             y_var_name = f"y_{l}_{i}"
             body.append(loma_ir.Declare(y_var_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
             y_var = loma_ir.Var(y_var_name, t=loma_ir.Float())
-            
-            node_nonlinear_vars = []
             
             # Use the provided alpha weights
             for q, nonlinearity_type in enumerate(nonlinearities):
                 alpha_weight = alpha_weights.get(f"alpha_{l}_{i}_{q}", random.uniform(0, 1))
                 alpha_const = loma_ir.ConstFloat(alpha_weight)
                 
-                # Apply nonlinearity q to s_i
-                nonlinear_var_name = f"{nonlinearity_type}_{l}_{i}_{q}"
-                nonlinear_output = kan_utils.apply_nonlinearity(
-                    nonlinearity_type, 
-                    s_var, 
-                    body, 
-                    nonlinear_var_name
-                )
-                
-                node_nonlinear_vars.append((nonlinearity_type, nonlinear_output, alpha_const))
-                
-                # y_i += alpha * nonlinear_output
+                # y_i += alpha * phi_q(s_i)
                 weighted_term = loma_ir.BinaryOp(
                     loma_ir.Mul(),
                     alpha_const,
-                    nonlinear_output,
+                    node_phi_vars[q],
                     t=loma_ir.Float()
                 )
                 
@@ -143,50 +146,63 @@ def kan_reverse_diff_pass(diff_func_id,
                 ))
             
             layer_y_vars.append(y_var)
-            layer_nonlinear_vars.append(node_nonlinear_vars)
+            layer_phi_vars.append(node_phi_vars)
         
         all_s_vars.append(layer_s_vars)
         all_y_vars.append(layer_y_vars)
-        all_nonlinear_vars.append(layer_nonlinear_vars)
+        all_phi_vars.append(layer_phi_vars)
         prev_layer_outputs = layer_y_vars
     
-    # Backward pass: compute gradients
-    # Initialize gradient variables for each layer
+    # Backward pass: compute gradients following the KAN paper formulas
     
-    # Start with the output gradient
+    # Start with the output gradient (equation 4: ∂L/∂y_i^(L) = ∂L/∂f)
     output_grad_name = "_dreturn"
     
-    # Work backwards through the layers
-    current_grad = [loma_ir.Var(output_grad_name, t=loma_ir.Float())]
+    # Initialize gradient arrays for each layer
+    # grad_y[l][i] stores ∂L/∂y_i^(l)
+    grad_y = []
+    for l in range(len(layer_sizes)):
+        layer_grad = []
+        for i in range(layer_sizes[l]):
+            if l == len(layer_sizes) - 1:  # Output layer
+                if i == 0:  # Assuming single output
+                    layer_grad.append(loma_ir.Var(output_grad_name, t=loma_ir.Float()))
+                else:
+                    layer_grad.append(loma_ir.ConstFloat(0.0))
+            else:
+                grad_var_name = f"grad_y_{l}_{i}"
+                body.append(loma_ir.Declare(grad_var_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
+                layer_grad.append(loma_ir.Var(grad_var_name, t=loma_ir.Float()))
+        grad_y.append(layer_grad)
     
+    # Work backwards through the layers (excluding input layer)
     for l in reversed(range(len(layer_sizes) - 1)):
         current_layer_size = layer_sizes[l]
         next_layer_size = layer_sizes[l+1]
         
-        # Gradients for the current layer inputs
-        prev_grad = []
-        for p in range(current_layer_size):
-            grad_var_name = f"grad_{l}_{p}"
-            body.append(loma_ir.Declare(grad_var_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
-            prev_grad.append(loma_ir.Var(grad_var_name, t=loma_ir.Float()))
+        # For each node in the current layer (l)
+        for i in range(current_layer_size):
+            # Reset gradient for this node
+            if l > 0:  # Not input layer
+                body.append(loma_ir.Assign(grad_y[l][i], loma_ir.ConstFloat(0.0)))
         
-        # For each node in the next layer
+        # Compute gradients using equation (6): ∂L/∂s_i^(l) = sum over q of (alpha_i^{q,l} * φ'_q(s_i^(l)) * sum over j of (a_ji^{l+1} * ∂L/∂s_j^{l+1}))
         for i in range(next_layer_size):
-            # Get the gradient flowing into this node
-            node_grad = current_grad[i]
-            
             # Get stored values from forward pass
             s_var = all_s_vars[l][i]
-            node_nonlinear_vars = all_nonlinear_vars[l][i]
+            phi_vars = all_phi_vars[l][i]
             
-            # Compute gradient w.r.t. s_i^(l)
+            # Compute ∂L/∂s_i^(l) following the mathematical formula
             ds_var_name = f"ds_{l}_{i}"
             body.append(loma_ir.Declare(ds_var_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
             ds_var = loma_ir.Var(ds_var_name, t=loma_ir.Float())
             
-            # ds_i = sum over q of (alpha_q * derivative_q(s_i) * dy_i)
-            for q, (nonlinearity_type, nonlinear_output, alpha_const) in enumerate(node_nonlinear_vars):
-                # Get the derivative of the nonlinearity
+            # ∂L/∂s_i^(l) = sum over q of (alpha_i^{q,l} * φ'_q(s_i^(l))) * ∂L/∂y_i^(l)
+            for q, nonlinearity_type in enumerate(nonlinearities):
+                alpha_weight = alpha_weights.get(f"alpha_{l}_{i}_{q}", random.uniform(0, 1))
+                alpha_const = loma_ir.ConstFloat(alpha_weight)
+                
+                # Get the derivative of the nonlinearity φ'_q(s_i^(l))
                 derivative_var_name = f"{nonlinearity_type}_deriv_back_{l}_{i}_{q}"
                 derivative_output = kan_utils.apply_nonlinearity_derivative(
                     nonlinearity_type, 
@@ -195,8 +211,8 @@ def kan_reverse_diff_pass(diff_func_id,
                     derivative_var_name
                 )
                 
-                # ds_i += alpha * derivative * dy_i
-                deriv_term = loma_ir.BinaryOp(
+                # ∂L/∂s_i^(l) += alpha_i^{q,l} * φ'_q(s_i^(l)) * ∂L/∂y_i^(l)
+                alpha_deriv_term = loma_ir.BinaryOp(
                     loma_ir.Mul(),
                     alpha_const,
                     derivative_output,
@@ -205,8 +221,8 @@ def kan_reverse_diff_pass(diff_func_id,
                 
                 weighted_deriv_term = loma_ir.BinaryOp(
                     loma_ir.Mul(),
-                    deriv_term,
-                    node_grad,
+                    alpha_deriv_term,
+                    grad_y[l+1][i],  # ∂L/∂y_i^(l) 
                     t=loma_ir.Float()
                 )
                 
@@ -220,11 +236,87 @@ def kan_reverse_diff_pass(diff_func_id,
                     )
                 ))
             
-            # Propagate gradient to previous layer inputs
-            # dx_p += weight * ds_i
+            # Propagate gradient to previous layer using equation (5): ∂L/∂s_j^(l-1) = sum over i of (a_pi^(l) * ∂L/∂s_i^(l))
             for p in range(current_layer_size):
+                if l > 0:  # Not propagating to input layer yet
+                    weight = weights.get(f"w_{l}_{i}_{p}", random.uniform(-0.1, 0.1))
+                    weight_const = loma_ir.ConstFloat(weight)
+                    
+                    # ∂L/∂y_p^(l-1) += a_pi^(l) * ∂L/∂s_i^(l)
+                    weight_grad_term = loma_ir.BinaryOp(
+                        loma_ir.Mul(),
+                        weight_const,
+                        ds_var,
+                        t=loma_ir.Float()
+                    )
+                    
+                    body.append(loma_ir.Assign(
+                        grad_y[l][p],
+                        loma_ir.BinaryOp(
+                            loma_ir.Add(),
+                            grad_y[l][p],
+                            weight_grad_term,
+                            t=loma_ir.Float()
+                        )
+                    ))
+    
+    # For the input layer, compute final gradients using equation (9): ∂L/∂x_p = sum over i of (c_pi^(1) * ∂L/∂s_i^(1))
+    if len(layer_sizes) > 1:
+        l = 0  # First hidden layer (layer 1 in the paper notation)
+        for i in range(layer_sizes[l+1]):  # Next layer size
+            # Get stored values from forward pass
+            s_var = all_s_vars[l][i]
+            
+            # Compute ∂L/∂s_i^(1)
+            ds_var_name = f"ds_input_{i}"
+            body.append(loma_ir.Declare(ds_var_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
+            ds_var = loma_ir.Var(ds_var_name, t=loma_ir.Float())
+            
+            # ∂L/∂s_i^(1) = sum over q of (alpha_i^{q,1} * φ'_q(s_i^(1))) * ∂L/∂y_i^(1)
+            for q, nonlinearity_type in enumerate(nonlinearities):
+                alpha_weight = alpha_weights.get(f"alpha_{l}_{i}_{q}", random.uniform(0, 1))
+                alpha_const = loma_ir.ConstFloat(alpha_weight)
+                
+                # Get the derivative of the nonlinearity φ'_q(s_i^(1))
+                derivative_var_name = f"{nonlinearity_type}_deriv_input_{i}_{q}"
+                derivative_output = kan_utils.apply_nonlinearity_derivative(
+                    nonlinearity_type, 
+                    s_var, 
+                    body, 
+                    derivative_var_name
+                )
+                
+                # ∂L/∂s_i^(1) += alpha_i^{q,1} * φ'_q(s_i^(1)) * ∂L/∂y_i^(1)
+                alpha_deriv_term = loma_ir.BinaryOp(
+                    loma_ir.Mul(),
+                    alpha_const,
+                    derivative_output,
+                    t=loma_ir.Float()
+                )
+                
+                weighted_deriv_term = loma_ir.BinaryOp(
+                    loma_ir.Mul(),
+                    alpha_deriv_term,
+                    grad_y[l+1][i],
+                    t=loma_ir.Float()
+                )
+                
+                body.append(loma_ir.Assign(
+                    ds_var,
+                    loma_ir.BinaryOp(
+                        loma_ir.Add(),
+                        ds_var,
+                        weighted_deriv_term,
+                        t=loma_ir.Float()
+                    )
+                ))
+            
+            # Propagate to input: ∂L/∂x_p += c_pi^(1) * ∂L/∂s_i^(1)
+            for p in range(input_size):
                 weight = weights.get(f"w_{l}_{i}_{p}", random.uniform(-0.1, 0.1))
                 weight_const = loma_ir.ConstFloat(weight)
+                
+                dx_var = loma_ir.Var(f"_dx{p}", t=loma_ir.Float())
                 
                 weight_grad_term = loma_ir.BinaryOp(
                     loma_ir.Mul(),
@@ -233,22 +325,19 @@ def kan_reverse_diff_pass(diff_func_id,
                     t=loma_ir.Float()
                 )
                 
+                # Initialize if first time
+                if i == 0:
+                    body.append(loma_ir.Assign(dx_var, loma_ir.ConstFloat(0.0)))
+                
                 body.append(loma_ir.Assign(
-                    prev_grad[p],
+                    dx_var,
                     loma_ir.BinaryOp(
                         loma_ir.Add(),
-                        prev_grad[p],
+                        dx_var,
                         weight_grad_term,
                         t=loma_ir.Float()
                     )
                 ))
-        
-        current_grad = prev_grad
-    
-    # Assign final gradients to output arguments
-    for i in range(input_size):
-        dx_var = loma_ir.Var(f"_dx{i}", t=loma_ir.Float())
-        body.append(loma_ir.Assign(dx_var, current_grad[i]))
     
     return loma_ir.FunctionDef(
         diff_func_id,
