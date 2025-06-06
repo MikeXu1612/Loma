@@ -1,8 +1,9 @@
 import ir
+from kan_modules.kan_utils import reshape_alphas, reshape_weights
 ir.generate_asdl_file()
 import _asdl.loma as loma_ir
 import itertools
-from kan_modules.kan import make_kan_layer, parse_config_dict
+from kan_modules.kan import create_kan_in_loma, make_kan_layer, parse_config_dict
 
 def flatten(nested_list : list):
     # recursively flatten a nested list
@@ -292,19 +293,56 @@ class InjectKAN(IRMutator):
         assert isinstance(node, loma_ir.Call) and node.id == "list", "Expected [int] literal"
         return [self.extract_const_int(e) for e in node.args]
 
-
+    def extract_flat_float_list(self, node):
+        assert isinstance(node, loma_ir.Call) and node.id == "list", \
+            f"Expected list(...) call for float list, got {type(node).__name__} with id={getattr(node, 'id', None)}"
+        floats = []
+        for arg in node.args:
+            if isinstance(arg, loma_ir.ConstFloat):
+                floats.append(arg.val)
+            elif isinstance(arg, loma_ir.ConstInt):
+                floats.append(float(arg.val))
+            else:
+                raise ValueError(f"Expected float/int constant, got {type(arg).__name__}")
+        return floats
+    
     def mutate_call(self, node):
         if node.id != "kan":
             return super().mutate_call(node)
 
-        if len(node.args) != 5:
-            raise ValueError("kan(...) must be called as: kan(X, input_size, output_size, hidden_sizes, num_nonlinearities)")
+        if len(node.args) not in (5, 7):
+            raise ValueError("kan(...) must be called as: kan(X, input_size, output_size, hidden_sizes, num_nonlinearities [, weights, alphas])")
 
         input_arg = self.mutate_expr(node.args[0])
         input_size = self.extract_const_int(node.args[1])
         output_size = self.extract_const_int(node.args[2])
         hidden_sizes = self.extract_int_list(node.args[3])
         num_nonlinearities = self.extract_const_int(node.args[4])
+        layer_sizes = [input_size] + hidden_sizes + [output_size]
+        weights_len = sum(layer_sizes[i] * layer_sizes[i+1] for i in range(len(layer_sizes) - 1))
+        alphas_len = sum(layer_sizes[i+1] * num_nonlinearities for i in range(len(layer_sizes) - 1))
+
+        weights = None
+        alphas = None
+        weights_node = None
+        alphas_node = None
+
+        if len(node.args) == 7:
+            weights_node = node.args[5]
+            alphas_node = node.args[6]
+
+            if isinstance(weights_node, loma_ir.Var):
+                weights = loma_ir.Var(weights_node.id, t=loma_ir.Array(loma_ir.Float(), static_size=weights_len))
+            else:
+                raise ValueError("weights must be passed as variable")
+
+            if isinstance(alphas_node, loma_ir.Var):
+                alphas = loma_ir.Var(alphas_node.id, t=loma_ir.Array(loma_ir.Float(), static_size=alphas_len))
+            else:
+                raise ValueError("alphas must be passed as variable")
+
+        if isinstance(input_arg, loma_ir.Var) and input_arg.t is None:
+            input_arg = loma_ir.Var(input_arg.id, t=loma_ir.Array(loma_ir.Float(), static_size=input_size))
 
         func_name = f"kan_layer_{self.counter}"
         self.counter += 1
@@ -315,8 +353,17 @@ class InjectKAN(IRMutator):
                 input_size=input_size,
                 output_size=output_size,
                 hidden_sizes=hidden_sizes,
-                num_nonlinearities=num_nonlinearities
+                num_nonlinearities=num_nonlinearities,
+                weights=weights,
+                alphas=alphas
             )
             self.generated_funcs[func_name] = func_def
 
-        return loma_ir.Call(func_name, [input_arg], t=node.t, lineno=node.lineno)
+        call_args = [input_arg]
+        if weights is not None:
+            call_args.append(weights)
+        if alphas is not None:
+            call_args.append(alphas)
+
+        return loma_ir.Call(func_name, call_args, t=node.t, lineno=node.lineno)
+

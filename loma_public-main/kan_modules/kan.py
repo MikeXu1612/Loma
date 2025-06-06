@@ -144,7 +144,7 @@ class KANNetwork:
             return x if x > 0 else alpha * (np.exp(x) - 1)
 
 
-def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_nonlinearities=5):
+def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_nonlinearities=5, weights=None, alphas=None):
     """
     Create a KAN network in Loma IR
     
@@ -164,6 +164,12 @@ def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_
     args = [
         loma_ir.Arg("X", loma_ir.Array(loma_ir.Float(), static_size=input_size), loma_ir.In())
     ]
+
+    if isinstance(weights, loma_ir.Var) and weights.t is not None:
+        args.append(loma_ir.Arg(weights.id, weights.t, loma_ir.In()))
+
+    if isinstance(alphas, loma_ir.Var) and alphas.t is not None:
+        args.append(loma_ir.Arg(alphas.id, alphas.t, loma_ir.In()))
 
     
     # Create body of the function
@@ -192,16 +198,27 @@ def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_
             body.append(loma_ir.Declare(s_var_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
             s_var = loma_ir.Var(s_var_name, t=loma_ir.Float())
             
-            # Random weights for this example
+
             for p in range(current_layer_size):
-                weight = random.uniform(-0.1, 0.1)
+
+                if weights is not None:
+                    if isinstance(weights, list):
+                        weight_val = weights[l][i * current_layer_size + p]
+                        weight_expr = loma_ir.ConstFloat(weight_val)
+                    else:  # assume it's a Var (e.g., Var("W"))
+                        weight_index = loma_ir.ConstInt(i * current_layer_size + p)
+                        weight_expr = loma_ir.ArrayAccess(weights, weight_index, t=loma_ir.Float())
+                else:
+                    weight_expr = loma_ir.ConstFloat(random.uniform(-0.1, 0.1))
+
+
                 weight_term = loma_ir.BinaryOp(
                     loma_ir.Mul(),
-                    loma_ir.ConstFloat(weight),
+                    weight_expr, 
                     prev_layer_outputs[p],
                     t=loma_ir.Float()
                 )
-                
+
                 body.append(loma_ir.Assign(
                     s_var,
                     loma_ir.BinaryOp(
@@ -211,16 +228,24 @@ def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_
                         t=loma_ir.Float()
                     )
                 ))
-            
+
             # Apply nonlinearities and combine with alpha weights
             y_var_name = f"y_{l}_{i}"
             body.append(loma_ir.Declare(y_var_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
             y_var = loma_ir.Var(y_var_name, t=loma_ir.Float())
-            
-            # Random alpha weights for this example, normalized to sum to 1
-            alpha_weights = [random.uniform(0, 1) for _ in range(num_nonlinearities)]
-            total = sum(alpha_weights)
-            alpha_weights = [w / total for w in alpha_weights]
+                
+            if alphas is not None:
+                if isinstance(alphas, list):
+                    alpha_weights = alphas[l][i]
+                else:
+                    alpha_weights = []
+                    for j in range(num_nonlinearities):
+                        alpha_idx = loma_ir.ConstInt(i * num_nonlinearities + j)
+                        alpha_weights.append(loma_ir.ArrayAccess(alphas, alpha_idx, t=loma_ir.Float()))
+            else:
+                alpha_weights = [random.uniform(0, 1) for _ in range(num_nonlinearities)]
+                total = sum(alpha_weights)
+                alpha_weights = [w / total for w in alpha_weights]
             
             for q in range(num_nonlinearities):
                 # Apply nonlinearity q to s_i
@@ -369,7 +394,13 @@ def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_
                     nonlinear_output = nonlinear_var
                 
                 # Combine with alpha weight
-                alpha_weight = loma_ir.ConstFloat(alpha_weights[q])
+                #alpha_weight = loma_ir.ConstFloat(alpha_weights[q])
+                if isinstance(alpha_weights[q], loma_ir.expr):
+                    alpha_weight = alpha_weights[q]
+                else:
+                    alpha_weight = loma_ir.ConstFloat(alpha_weights[q])
+
+
                 weighted_term = loma_ir.BinaryOp(
                     loma_ir.Mul(),
                     alpha_weight,
@@ -403,17 +434,19 @@ def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_
         func_id,
         args,
         body,
-        False,  # is_simd
-        loma_ir.Float() if output_size == 1 else None,  # ret_type
+        False,
+        loma_ir.Float() if output_size == 1 else None,
     ) 
 
-def make_kan_layer(name="kan_layer", input_size=2, output_size=1, hidden_sizes=[], num_nonlinearities=3):
+def make_kan_layer(name="kan_layer", input_size=2, output_size=1, hidden_sizes=[], num_nonlinearities=3, weights=None, alphas=None):
     return create_kan_in_loma(
         func_id=name,
         input_size=input_size,
         output_size=output_size,
         hidden_sizes=hidden_sizes,
-        num_nonlinearities=num_nonlinearities
+        num_nonlinearities=num_nonlinearities, 
+        weights=weights,
+        alphas=alphas
     )
 
 def injectable_kan_layer():
