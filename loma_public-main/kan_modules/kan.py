@@ -185,6 +185,9 @@ def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_
     
     # Process each layer
     prev_layer_outputs = input_vars
+    weight_offset = 0
+    alpha_offset = 0
+
     
     for l in range(len(layer_sizes) - 1):
         current_layer_size = layer_sizes[l]
@@ -206,7 +209,7 @@ def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_
                         weight_val = weights[l][i * current_layer_size + p]
                         weight_expr = loma_ir.ConstFloat(weight_val)
                     else:  # assume it's a Var (e.g., Var("W"))
-                        weight_index = loma_ir.ConstInt(i * current_layer_size + p)
+                        weight_index = loma_ir.ConstInt(weight_offset + i * current_layer_size + p)
                         weight_expr = loma_ir.ArrayAccess(weights, weight_index, t=loma_ir.Float())
                 else:
                     weight_expr = loma_ir.ConstFloat(random.uniform(-0.1, 0.1))
@@ -240,7 +243,7 @@ def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_
                 else:
                     alpha_weights = []
                     for j in range(num_nonlinearities):
-                        alpha_idx = loma_ir.ConstInt(i * num_nonlinearities + j)
+                        alpha_idx = loma_ir.ConstInt(alpha_offset + i * num_nonlinearities + j)
                         alpha_weights.append(loma_ir.ArrayAccess(alphas, alpha_idx, t=loma_ir.Float()))
             else:
                 alpha_weights = [random.uniform(0, 1) for _ in range(num_nonlinearities)]
@@ -419,8 +422,10 @@ def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_
                 ))
             
             layer_outputs.append(y_var)
-        
+            
         prev_layer_outputs = layer_outputs
+        weight_offset += current_layer_size * next_layer_size
+        alpha_offset += next_layer_size * num_nonlinearities
     
     # Return the final layer output
     if output_size == 1:
