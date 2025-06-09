@@ -283,6 +283,7 @@ class InjectKAN(IRMutator):
     def __init__(self):
         super().__init__()
         self.generated_funcs = {}
+        self.kan_layer_cache = {}
         self.counter = 0
 
     def extract_const_int(self,node):
@@ -344,10 +345,15 @@ class InjectKAN(IRMutator):
         if isinstance(input_arg, loma_ir.Var) and input_arg.t is None:
             input_arg = loma_ir.Var(input_arg.id, t=loma_ir.Array(loma_ir.Float(), static_size=input_size))
 
-        func_name = f"kan_layer_{self.counter}"
-        self.counter += 1
+        key = (input_size, output_size, tuple(hidden_sizes), num_nonlinearities)
+        if key in self.kan_layer_cache:
+            func_name = self.kan_layer_cache[key]
+        else:
+            hash_key = f"kan_{input_size}_{output_size}_{hidden_sizes}_{num_nonlinearities}"
+            func_name = f"kan_layer_{abs(hash(hash_key)) % (10**8)}"
 
-        if func_name not in self.generated_funcs:
+            self.counter += 1
+
             func_def = make_kan_layer(
                 name=func_name,
                 input_size=input_size,
@@ -358,6 +364,7 @@ class InjectKAN(IRMutator):
                 alphas=alphas
             )
             self.generated_funcs[func_name] = func_def
+            self.kan_layer_cache[key] = func_name
 
         call_args = [input_arg]
         if weights is not None:
@@ -365,5 +372,8 @@ class InjectKAN(IRMutator):
         if alphas is not None:
             call_args.append(alphas)
 
-        return loma_ir.Call(func_name, call_args, t=node.t, lineno=node.lineno)
-
+        if output_size == 1:
+            return_type = loma_ir.Float()
+        else:
+            return_type = loma_ir.Array(loma_ir.Float(), static_size=output_size)
+        return loma_ir.Call(func_name, call_args, t=return_type, lineno=node.lineno)

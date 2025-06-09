@@ -6,7 +6,6 @@ import numpy as np
 import random
 
 def parse_config_dict(dict_node):
-    """解析 loma_ir.Dict 为 Python dict"""
     assert isinstance(dict_node, loma_ir.Dict)
     config = {}
     for k, v in zip(dict_node.keys, dict_node.values):
@@ -430,18 +429,27 @@ def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_
     # Return the final layer output
     if output_size == 1:
         body.append(loma_ir.Return(prev_layer_outputs[0]))
+        return_type = loma_ir.Float()
     else:
-        # Create a struct to return multiple values
-        # This would need proper struct definition in the actual implementation
-        pass
-    
+        return_type = loma_ir.Array(loma_ir.Float(), static_size=output_size)
+        result_array = loma_ir.Var("__result", t=return_type)
+        body.append(loma_ir.Declare(result_array.id, return_type))
+        for i in range(output_size):
+            body.append(loma_ir.Assign(
+                loma_ir.ArrayAccess(result_array, loma_ir.ConstInt(i), t=loma_ir.Float()),
+                prev_layer_outputs[i]
+            ))
+        body.append(loma_ir.Return(result_array))
+
+    print(output_size, return_type)
     return loma_ir.FunctionDef(
-        func_id,
-        args,
-        body,
-        False,
-        loma_ir.Float() if output_size == 1 else None,
-    ) 
+        id=func_id,
+        args=args,
+        body=body,
+        is_simd=False,
+        ret_type=return_type
+    )
+
 
 def make_kan_layer(name="kan_layer", input_size=2, output_size=1, hidden_sizes=[], num_nonlinearities=3, weights=None, alphas=None):
     return create_kan_in_loma(
