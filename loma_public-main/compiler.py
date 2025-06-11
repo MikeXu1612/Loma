@@ -20,6 +20,7 @@ import pathlib
 import error
 import platform
 import distutils.ccompiler
+from irmutator import InjectKAN
 
 def loma_to_ctypes_type(t : loma_ir.type | loma_ir.arg,
                         ctypes_structs : dict[str, ctypes.Structure]) -> ctypes.Structure:
@@ -91,50 +92,13 @@ def compile(loma_code : str,
 
     # The compiler passes
     # first parse the frontend code
+
     try:
         structs, funcs = parser.parse(loma_code)
-        # 在 parser.parse() 成功后判断是否需要注入 kan_layer
-        if "kan_layer" not in funcs:
-            inferred_input_size = None
 
-            for func in funcs.values():
-                for stmt in func.body:
-                    call = None
-                    if isinstance(stmt, loma_ir.Assign) and isinstance(stmt.val, loma_ir.Call):
-                        call = stmt.val
-                    elif isinstance(stmt, loma_ir.Return) and isinstance(stmt.val, loma_ir.Call):
-                        call = stmt.val
-
-                    if call and call.id == "kan_layer":
-                        inferred_input_size = len(call.args)
-                        break
-                if inferred_input_size is not None:
-                    break
-
-            
-            print("=== FUNC STRUCTURE ===")
-            for f in funcs.values():
-                print(f"Function: {f.id}")
-                if hasattr(f, 'body'):
-                    for stmt in f.body:
-                        print("  ", stmt)
-                else:
-                    print(f"  {type(f).__name__}")
-            print("======================")
-
-
-            if inferred_input_size is None:
-                raise Exception("Cannot infer input size for kan_layer. Please define it explicitly or ensure it's called in code.")
-
-            from kan_modules.kan import make_kan_layer
-            func_def = make_kan_layer(
-                name="kan_layer",
-                input_size=inferred_input_size,
-                output_size=1,
-                hidden_sizes=[3],
-                num_nonlinearities=6
-            )
-            funcs[func_def.id] = func_def
+        injector = InjectKAN()
+        funcs = {fid: injector.mutate_function(f) for fid, f in funcs.items()}
+        funcs.update(injector.generated_funcs)
 
         builtin_funcs = {
                             "tanh": loma_ir.FunctionDef("tanh", [loma_ir.Arg("x", loma_ir.Float(), loma_ir.In())], [], False, loma_ir.Float()),
@@ -183,6 +147,8 @@ def compile(loma_code : str,
 
         print('Generated C code:')
         print(code)
+        with open("generated_code.txt", "w") as f:
+            f.write(code)
 
         if platform.system() == 'Windows':
             tmp_c_filename = f'_tmp.c'
