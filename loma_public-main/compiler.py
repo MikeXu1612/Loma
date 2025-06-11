@@ -98,18 +98,19 @@ def compile(loma_code : str,
             inferred_input_size = None
 
             for func in funcs.values():
-                for stmt in func.body:
-                    call = None
-                    if isinstance(stmt, loma_ir.Assign) and isinstance(stmt.val, loma_ir.Call):
-                        call = stmt.val
-                    elif isinstance(stmt, loma_ir.Return) and isinstance(stmt.val, loma_ir.Call):
-                        call = stmt.val
+                if hasattr(func, 'body'):
+                    for stmt in func.body:
+                        call = None
+                        if isinstance(stmt, loma_ir.Assign) and isinstance(stmt.val, loma_ir.Call):
+                            call = stmt.val
+                        elif isinstance(stmt, loma_ir.Return) and isinstance(stmt.val, loma_ir.Call):
+                            call = stmt.val
 
-                    if call and call.id == "kan_layer":
-                        inferred_input_size = len(call.args)
+                        if call and call.id == "kan_layer":
+                            inferred_input_size = len(call.args)
+                            break
+                    if inferred_input_size is not None:
                         break
-                if inferred_input_size is not None:
-                    break
 
             
             print("=== FUNC STRUCTURE ===")
@@ -123,18 +124,16 @@ def compile(loma_code : str,
             print("======================")
 
 
-            if inferred_input_size is None:
-                raise Exception("Cannot infer input size for kan_layer. Please define it explicitly or ensure it's called in code.")
-
-            from kan_modules.kan import make_kan_layer
-            func_def = make_kan_layer(
-                name="kan_layer",
-                input_size=inferred_input_size,
-                output_size=1,
-                hidden_sizes=[3],
-                num_nonlinearities=6
-            )
-            funcs[func_def.id] = func_def
+            if inferred_input_size is not None:
+                from kan_modules.kan import make_kan_layer
+                func_def = make_kan_layer(
+                    name="kan_layer",
+                    input_size=inferred_input_size,
+                    output_size=1,
+                    hidden_sizes=[3],
+                    num_nonlinearities=6
+                )
+                funcs[func_def.id] = func_def
 
         builtin_funcs = {
                             "tanh": loma_ir.FunctionDef("tanh", [loma_ir.Arg("x", loma_ir.Float(), loma_ir.In())], [], False, loma_ir.Float()),
