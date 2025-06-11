@@ -318,6 +318,7 @@ def differentiate(structs : dict[str, loma_ir.Struct],
             alpha_weights = getattr(kan_func, 'alpha_weights', None)  # Use default in create_kan_forward_diff
             
             # Create KAN forward differentiation function
+            """
             fwd_diff_func = kan_forward_diff.create_kan_forward_diff(
                 func_to_fwd[kan_id],
                 structs,
@@ -331,6 +332,19 @@ def differentiate(structs : dict[str, loma_ir.Struct],
                 weights,
                 alpha_weights
             )
+            """
+            fwd_diff_func = kan_forward_diff.create_param_kan_forward_diff(
+                func_to_fwd[kan_id],
+                structs,
+                funcs,
+                diff_structs,
+                input_size,
+                output_size,
+                hidden_sizes,
+                nonlinearities
+            )
+
+
             funcs[func_to_fwd[kan_id]] = fwd_diff_func
             import pretty_print
             print(f'\nKAN Forward differentiation of function {kan_id}:')
