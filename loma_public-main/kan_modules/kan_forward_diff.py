@@ -153,6 +153,9 @@ def create_kan_forward_diff(diff_func_id, structs, funcs, diff_structs, func_id,
         diff_func_id, func_id, input_size, output_size, hidden_sizes, nonlinearities, weights, alpha_weights
     )
 """
+STRUCT_CACHE = {}
+
+
 def build_param_kan_layer_forward_ir(layer_idx, prev_vals, prev_dvals, current_layer_size, next_layer_size, nonlinearities, W, A, weight_offset, alpha_offset, body):
     layer_outputs = []
     layer_doutputs = []
@@ -210,6 +213,7 @@ def build_param_kan_layer_forward_ir(layer_idx, prev_vals, prev_dvals, current_l
 
     return layer_outputs, layer_doutputs
 
+
 def param_kan_forward_diff(diff_func_id, input_size, output_size, hidden_sizes, nonlinearities):
     num_nonlinearities = len(nonlinearities)
     layer_sizes = [input_size] + hidden_sizes + [output_size]
@@ -256,10 +260,12 @@ def param_kan_forward_diff(diff_func_id, input_size, output_size, hidden_sizes, 
 
     return loma_ir.FunctionDef(diff_func_id, args, body, False, None)
 
-def create_param_kan_forward_diff(diff_func_id, structs, funcs, diff_structs, input_size, output_size, hidden_sizes, nonlinearities):
+
+def create_param_kan_forward_diff(diff_func_id, structs, funcs, diff_structs, input_size, output_size, hidden_sizes, nonlinearities=None):
     if nonlinearities is None:
         nonlinearities = ['sigmoid', 'tanh', 'relu', 'leaky_relu', 'softplus', 'elu']
 
+    key = (tuple(hidden_sizes), input_size, output_size, tuple(nonlinearities))
 
     if '_dfloat' not in structs:
         dfloat_struct = loma_ir.Struct(
@@ -273,4 +279,17 @@ def create_param_kan_forward_diff(diff_func_id, structs, funcs, diff_structs, in
         structs['_dfloat'] = dfloat_struct
         diff_structs[loma_ir.Float()] = dfloat_struct
 
-    return param_kan_forward_diff(diff_func_id, input_size, output_size, hidden_sizes, nonlinearities)
+    if key in STRUCT_CACHE:
+        cached_func = STRUCT_CACHE[key]
+    else:
+        cached_func = param_kan_forward_diff("__KAN_STRUCT_CACHE_TEMPLATE__", input_size, output_size, hidden_sizes, nonlinearities)
+        STRUCT_CACHE[key] = cached_func
+
+    # Always return a fresh clone of the cached template
+    return loma_ir.FunctionDef(
+        id=diff_func_id,
+        args=cached_func.args,
+        body=[stmt for stmt in cached_func.body],
+        is_simd=False,
+        ret_type=None
+    )
