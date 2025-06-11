@@ -307,73 +307,91 @@ class InjectKAN(IRMutator):
                 raise ValueError(f"Expected float/int constant, got {type(arg).__name__}")
         return floats
     
+    def mutate_call_stmt(self, node):
+        expr = self.mutate_expr(node.call)
+        assert isinstance(expr, loma_ir.Call), "CallStmt expects a Call expression"
+        return loma_ir.CallStmt(expr, lineno=node.lineno)
+
+    
     def mutate_call(self, node):
         if node.id != "kan":
             return super().mutate_call(node)
 
-        if len(node.args) not in (5, 7):
-            raise ValueError("kan(...) must be called as: kan(X, input_size, output_size, hidden_sizes, num_nonlinearities [, weights, alphas])")
+        if len(node.args) not in (5, 7, 8):
+            raise ValueError("kan(...) must be called as: kan(X, input_size, output_size, hidden_sizes, num_nonlinearities [, weights, alphas [, output_var]])")
 
         input_arg = self.mutate_expr(node.args[0])
         input_size = self.extract_const_int(node.args[1])
         output_size = self.extract_const_int(node.args[2])
         hidden_sizes = self.extract_int_list(node.args[3])
         num_nonlinearities = self.extract_const_int(node.args[4])
+
         layer_sizes = [input_size] + hidden_sizes + [output_size]
         weights_len = sum(layer_sizes[i] * layer_sizes[i+1] for i in range(len(layer_sizes) - 1))
         alphas_len = sum(layer_sizes[i+1] * num_nonlinearities for i in range(len(layer_sizes) - 1))
 
-        weights = None
-        alphas = None
-        weights_node = None
-        alphas_node = None
+        weights = alphas = output_var = None
 
-        if len(node.args) == 7:
+        if len(node.args) >= 7:
             weights_node = node.args[5]
             alphas_node = node.args[6]
 
             if isinstance(weights_node, loma_ir.Var):
-                weights = loma_ir.Var(weights_node.id, t=loma_ir.Array(loma_ir.Float(), static_size=weights_len))
+                weights = loma_ir.Var(
+                    weights_node.id,
+                    t=loma_ir.Array(loma_ir.Float(), static_size=weights_len)
+                )
             else:
-                raise ValueError("weights must be passed as variable")
+                raise ValueError("weights must be a Var")
 
             if isinstance(alphas_node, loma_ir.Var):
-                alphas = loma_ir.Var(alphas_node.id, t=loma_ir.Array(loma_ir.Float(), static_size=alphas_len))
+                alphas = loma_ir.Var(
+                    alphas_node.id,
+                    t=loma_ir.Array(loma_ir.Float(), static_size=alphas_len)
+                )
             else:
-                raise ValueError("alphas must be passed as variable")
+                raise ValueError("alphas must be a Var")
 
+        if len(node.args) == 8:
+            output_node = node.args[7]
+            if isinstance(output_node, loma_ir.Var):
+                output_var = loma_ir.Var(
+                    output_node.id,
+                    t=loma_ir.Array(loma_ir.Float(), static_size=output_size)
+                )
+            else:
+                raise ValueError("output_var must be a Var")
+
+        # If input_arg has no type, set its type explicitly
         if isinstance(input_arg, loma_ir.Var) and input_arg.t is None:
             input_arg = loma_ir.Var(input_arg.id, t=loma_ir.Array(loma_ir.Float(), static_size=input_size))
 
+        # Generate or reuse KAN layer function
         key = (input_size, output_size, tuple(hidden_sizes), num_nonlinearities)
         if key in self.kan_layer_cache:
             func_name = self.kan_layer_cache[key]
         else:
-            hash_key = f"kan_{input_size}_{output_size}_{hidden_sizes}_{num_nonlinearities}"
-            func_name = f"kan_layer_{abs(hash(hash_key)) % (10**8)}"
-
-            self.counter += 1
-
-            func_def = make_kan_layer(
-                name=func_name,
+            func_name = f"kan_layer_{abs(hash(f'{key}')) % (10**8)}"
+            func_def = create_kan_in_loma(
+                func_id=func_name,
                 input_size=input_size,
                 output_size=output_size,
                 hidden_sizes=hidden_sizes,
                 num_nonlinearities=num_nonlinearities,
                 weights=weights,
-                alphas=alphas
+                alphas=alphas,
+                output_var=output_var
             )
             self.generated_funcs[func_name] = func_def
             self.kan_layer_cache[key] = func_name
 
         call_args = [input_arg]
-        if weights is not None:
-            call_args.append(weights)
-        if alphas is not None:
-            call_args.append(alphas)
+        if weights: call_args.append(weights)
+        if alphas: call_args.append(alphas)
+        if output_var: call_args.append(output_var)
 
-        if output_size == 1:
-            return_type = loma_ir.Float()
-        else:
-            return_type = loma_ir.Array(loma_ir.Float(), static_size=output_size)
-        return loma_ir.Call(func_name, call_args, t=return_type, lineno=node.lineno)
+        ret_type = None if output_var else (
+            loma_ir.Float() if output_size == 1 else loma_ir.Array(loma_ir.Float(), static_size=output_size)
+        )
+
+        return loma_ir.Call(func_name, call_args, t=ret_type, lineno=node.lineno)

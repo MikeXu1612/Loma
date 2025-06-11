@@ -143,111 +143,77 @@ class KANNetwork:
             return x if x > 0 else alpha * (np.exp(x) - 1)
 
 
-def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_nonlinearities=5, weights=None, alphas=None):
-    """
-    Create a KAN network in Loma IR
-    
-    Args:
-        func_id: The ID of the function to create
-        input_size: Size of the input layer
-        output_size: Size of the output layer
-        hidden_sizes: List of hidden layer sizes
-        num_nonlinearities: Number of nonlinear functions to use at each node
-        
-    Returns:
-        A Loma IR function definition for the KAN
-    """
+def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10],
+                       num_nonlinearities=5, weights=None, alphas=None, output_var=None):
     layer_sizes = [input_size] + hidden_sizes + [output_size]
-    
-    # Create arguments for the function
+
     args = [
         loma_ir.Arg("X", loma_ir.Array(loma_ir.Float(), static_size=input_size), loma_ir.In())
     ]
 
     if isinstance(weights, loma_ir.Var) and weights.t is not None:
         args.append(loma_ir.Arg(weights.id, weights.t, loma_ir.In()))
-
     if isinstance(alphas, loma_ir.Var) and alphas.t is not None:
         args.append(loma_ir.Arg(alphas.id, alphas.t, loma_ir.In()))
 
-    
-    # Create body of the function
+    # Handle output_var typing if not set
+    if output_var is not None and output_var.t is None:
+        output_var = loma_ir.Var(output_var.id, t=loma_ir.Array(loma_ir.Float(), static_size=output_size))
+
+    # Add output_var to function arguments
+    if output_var is not None:
+        args.append(loma_ir.Arg(output_var.id, output_var.t, loma_ir.Out()))
+
+
     body = []
-    
-    # Declare variables for inputs
+
     X = loma_ir.Var("X", t=loma_ir.Array(loma_ir.Float(), input_size))
     input_vars = [
         loma_ir.ArrayAccess(X, loma_ir.ConstInt(i), t=loma_ir.Float())
         for i in range(input_size)
     ]
 
-    
-    # Process each layer
     prev_layer_outputs = input_vars
     weight_offset = 0
     alpha_offset = 0
 
-    
     for l in range(len(layer_sizes) - 1):
         current_layer_size = layer_sizes[l]
         next_layer_size = layer_sizes[l+1]
-        
+
         layer_outputs = []
-        
+
         for i in range(next_layer_size):
-            # Compute linear combination s_i^(l)
-            s_var_name = f"s_{l}_{i}"
-            body.append(loma_ir.Declare(s_var_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
-            s_var = loma_ir.Var(s_var_name, t=loma_ir.Float())
-            
+            s_name = f"s_{l}_{i}"
+            body.append(loma_ir.Declare(s_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
+            s_var = loma_ir.Var(s_name, t=loma_ir.Float())
 
             for p in range(current_layer_size):
-
                 if weights is not None:
-                    if isinstance(weights, list):
-                        weight_val = weights[l][i * current_layer_size + p]
-                        weight_expr = loma_ir.ConstFloat(weight_val)
-                    else:  # assume it's a Var (e.g., Var("W"))
-                        weight_index = loma_ir.ConstInt(weight_offset + i * current_layer_size + p)
-                        weight_expr = loma_ir.ArrayAccess(weights, weight_index, t=loma_ir.Float())
+                    weight_index = loma_ir.ConstInt(weight_offset + i * current_layer_size + p)
+                    weight_expr = loma_ir.ArrayAccess(weights, weight_index, t=loma_ir.Float())
                 else:
                     weight_expr = loma_ir.ConstFloat(random.uniform(-0.1, 0.1))
 
-
-                weight_term = loma_ir.BinaryOp(
-                    loma_ir.Mul(),
-                    weight_expr, 
-                    prev_layer_outputs[p],
-                    t=loma_ir.Float()
-                )
-
                 body.append(loma_ir.Assign(
                     s_var,
-                    loma_ir.BinaryOp(
-                        loma_ir.Add(),
-                        s_var,
-                        weight_term,
-                        t=loma_ir.Float()
-                    )
-                ))
+                    loma_ir.BinaryOp(loma_ir.Add(), s_var,
+                        loma_ir.BinaryOp(loma_ir.Mul(), weight_expr, prev_layer_outputs[p], t=loma_ir.Float())),
+                    ))
 
-            # Apply nonlinearities and combine with alpha weights
-            y_var_name = f"y_{l}_{i}"
-            body.append(loma_ir.Declare(y_var_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
-            y_var = loma_ir.Var(y_var_name, t=loma_ir.Float())
-                
+            y_name = f"y_{l}_{i}"
+            body.append(loma_ir.Declare(y_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
+            y_var = loma_ir.Var(y_name, t=loma_ir.Float())
+
+            alpha_weights = []
             if alphas is not None:
-                if isinstance(alphas, list):
-                    alpha_weights = alphas[l][i]
-                else:
-                    alpha_weights = []
-                    for j in range(num_nonlinearities):
-                        alpha_idx = loma_ir.ConstInt(alpha_offset + i * num_nonlinearities + j)
-                        alpha_weights.append(loma_ir.ArrayAccess(alphas, alpha_idx, t=loma_ir.Float()))
+                for j in range(num_nonlinearities):
+                    alpha_index = loma_ir.ConstInt(alpha_offset + i * num_nonlinearities + j)
+                    alpha_weights.append(loma_ir.ArrayAccess(alphas, alpha_index, t=loma_ir.Float()))
             else:
-                alpha_weights = [random.uniform(0, 1) for _ in range(num_nonlinearities)]
-                total = sum(alpha_weights)
-                alpha_weights = [w / total for w in alpha_weights]
+                values = [random.uniform(0, 1) for _ in range(num_nonlinearities)]
+                total = sum(values)
+                alpha_weights = [loma_ir.ConstFloat(v / total) for v in values]
             
             for q in range(num_nonlinearities):
                 # Apply nonlinearity q to s_i
@@ -426,28 +392,39 @@ def create_kan_in_loma(func_id, input_size, output_size, hidden_sizes=[10], num_
         weight_offset += current_layer_size * next_layer_size
         alpha_offset += next_layer_size * num_nonlinearities
     
-    # Return the final layer output
     if output_size == 1:
-        body.append(loma_ir.Return(prev_layer_outputs[0]))
-        return_type = loma_ir.Float()
-    else:
-        return_type = loma_ir.Array(loma_ir.Float(), static_size=output_size)
-        result_array = loma_ir.Var("__result", t=return_type)
-        body.append(loma_ir.Declare(result_array.id, return_type))
-        for i in range(output_size):
+        if output_var is None:
+            body.append(loma_ir.Return(prev_layer_outputs[0]))
+        else:
             body.append(loma_ir.Assign(
-                loma_ir.ArrayAccess(result_array, loma_ir.ConstInt(i), t=loma_ir.Float()),
-                prev_layer_outputs[i]
+                loma_ir.ArrayAccess(output_var, loma_ir.ConstInt(0), t=loma_ir.Float()),
+                prev_layer_outputs[0]
             ))
-        body.append(loma_ir.Return(result_array))
+    else:
+        if output_var is not None:
+            for i in range(output_size):
+                body.append(loma_ir.Assign(
+                    loma_ir.ArrayAccess(output_var, loma_ir.ConstInt(i), t=loma_ir.Float()),
+                    prev_layer_outputs[i]
+                ))
+        else:
+            result_array = loma_ir.Var("__result", t=loma_ir.Array(loma_ir.Float(), static_size=output_size))
+            body.append(loma_ir.Declare(result_array.id, result_array.t))
+            for i in range(output_size):
+                body.append(loma_ir.Assign(
+                    loma_ir.ArrayAccess(result_array, loma_ir.ConstInt(i), t=loma_ir.Float()),
+                    prev_layer_outputs[i]
+                ))
+            body.append(loma_ir.Return(result_array))
 
-    print(output_size, return_type)
     return loma_ir.FunctionDef(
-        id=func_id,
-        args=args,
-        body=body,
-        is_simd=False,
-        ret_type=return_type
+        func_id,
+        args,
+        body,
+        False,
+        None if output_var is not None else (
+            loma_ir.Float() if output_size == 1 else loma_ir.Array(loma_ir.Float(), static_size=output_size)
+        )
     )
 
 
