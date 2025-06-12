@@ -154,7 +154,7 @@ def create_kan_forward_diff(diff_func_id, structs, funcs, diff_structs, func_id,
     )
 """
 STRUCT_CACHE = {}
-
+import hashlib
 
 def build_param_kan_layer_forward_ir(layer_idx, prev_vals, prev_dvals, current_layer_size, next_layer_size, nonlinearities, W, A, weight_offset, alpha_offset, body):
     layer_outputs = []
@@ -163,24 +163,30 @@ def build_param_kan_layer_forward_ir(layer_idx, prev_vals, prev_dvals, current_l
     for i in range(next_layer_size):
         s_name = f"s_{layer_idx}_{i}"
         ds_name = f"ds_{layer_idx}_{i}"
-        body.append(loma_ir.Declare(s_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
-        body.append(loma_ir.Declare(ds_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
-        s_var = loma_ir.Var(s_name, t=loma_ir.Float())
-        ds_var = loma_ir.Var(ds_name, t=loma_ir.Float())
+        tmp_s_name = f"tmp_s_{layer_idx}_{i}"
+        tmp_ds_name = f"tmp_ds_{layer_idx}_{i}"
+
+        body.append(loma_ir.Declare(tmp_s_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
+        body.append(loma_ir.Declare(tmp_ds_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
+        tmp_s_var = loma_ir.Var(tmp_s_name, t=loma_ir.Float())
+        tmp_ds_var = loma_ir.Var(tmp_ds_name, t=loma_ir.Float())
 
         for p in range(current_layer_size):
             w_idx = loma_ir.ConstInt(weight_offset + i * current_layer_size + p)
             w_val = loma_ir.ArrayAccess(W, w_idx, t=loma_ir.Float())
-
             body.append(loma_ir.Assign(
-                s_var,
-                loma_ir.BinaryOp(loma_ir.Add(), s_var, loma_ir.BinaryOp(loma_ir.Mul(), w_val, prev_vals[p], t=loma_ir.Float()), t=loma_ir.Float())
+                tmp_s_var,
+                loma_ir.BinaryOp(loma_ir.Add(), tmp_s_var, loma_ir.BinaryOp(loma_ir.Mul(), w_val, prev_vals[p], t=loma_ir.Float()), t=loma_ir.Float())
+            ))
+            body.append(loma_ir.Assign(
+                tmp_ds_var,
+                loma_ir.BinaryOp(loma_ir.Add(), tmp_ds_var, loma_ir.BinaryOp(loma_ir.Mul(), w_val, prev_dvals[p], t=loma_ir.Float()), t=loma_ir.Float())
             ))
 
-            body.append(loma_ir.Assign(
-                ds_var,
-                loma_ir.BinaryOp(loma_ir.Add(), ds_var, loma_ir.BinaryOp(loma_ir.Mul(), w_val, prev_dvals[p], t=loma_ir.Float()), t=loma_ir.Float())
-            ))
+        body.append(loma_ir.Declare(s_name, loma_ir.Float(), tmp_s_var))
+        body.append(loma_ir.Declare(ds_name, loma_ir.Float(), tmp_ds_var))
+        s_var = loma_ir.Var(s_name, t=loma_ir.Float())
+        ds_var = loma_ir.Var(ds_name, t=loma_ir.Float())
 
         y_name = f"y_{layer_idx}_{i}"
         dy_name = f"dy_{layer_idx}_{i}"
@@ -188,24 +194,21 @@ def build_param_kan_layer_forward_ir(layer_idx, prev_vals, prev_dvals, current_l
         body.append(loma_ir.Declare(dy_name, loma_ir.Float(), loma_ir.ConstFloat(0.0)))
         y_var = loma_ir.Var(y_name, t=loma_ir.Float())
         dy_var = loma_ir.Var(dy_name, t=loma_ir.Float())
-        num_nonlinearities = len(nonlinearities)
 
-        for q, nonlinearity_type in enumerate(nonlinearities):
-            alpha_idx = loma_ir.ConstInt(alpha_offset + i * num_nonlinearities + q)
-            alpha_val = loma_ir.ArrayAccess(A, alpha_idx, t=loma_ir.Float())
-
-            phi_var = kan_utils.apply_nonlinearity(nonlinearity_type, s_var, body, f"phi_{layer_idx}_{i}_{q}")
-            dphi_var = kan_utils.apply_nonlinearity_derivative(nonlinearity_type, s_var, body, f"dphi_{layer_idx}_{i}_{q}")
-
+        num_nl = len(nonlinearities)
+        for q, nl_type in enumerate(nonlinearities):
+            a_idx = loma_ir.ConstInt(alpha_offset + i * num_nl + q)
+            a_val = loma_ir.ArrayAccess(A, a_idx, t=loma_ir.Float())
+            phi = kan_utils.apply_nonlinearity(nl_type, s_var, body, f"phi_{layer_idx}_{i}_{q}")
+            dphi = kan_utils.apply_nonlinearity_derivative(nl_type, s_var, body, f"dphi_{layer_idx}_{i}_{q}")
             body.append(loma_ir.Assign(
                 y_var,
-                loma_ir.BinaryOp(loma_ir.Add(), y_var, loma_ir.BinaryOp(loma_ir.Mul(), alpha_val, phi_var, t=loma_ir.Float()), t=loma_ir.Float())
+                loma_ir.BinaryOp(loma_ir.Add(), y_var, loma_ir.BinaryOp(loma_ir.Mul(), a_val, phi, t=loma_ir.Float()), t=loma_ir.Float())
             ))
-
-            d_term = loma_ir.BinaryOp(loma_ir.Mul(), dphi_var, ds_var, t=loma_ir.Float())
+            term = loma_ir.BinaryOp(loma_ir.Mul(), dphi, ds_var, t=loma_ir.Float())
             body.append(loma_ir.Assign(
                 dy_var,
-                loma_ir.BinaryOp(loma_ir.Add(), dy_var, loma_ir.BinaryOp(loma_ir.Mul(), alpha_val, d_term, t=loma_ir.Float()), t=loma_ir.Float())
+                loma_ir.BinaryOp(loma_ir.Add(), dy_var, loma_ir.BinaryOp(loma_ir.Mul(), a_val, term, t=loma_ir.Float()), t=loma_ir.Float())
             ))
 
         layer_outputs.append(y_var)
@@ -215,10 +218,10 @@ def build_param_kan_layer_forward_ir(layer_idx, prev_vals, prev_dvals, current_l
 
 
 def param_kan_forward_diff(diff_func_id, input_size, output_size, hidden_sizes, nonlinearities):
-    num_nonlinearities = len(nonlinearities)
+    num_nl = len(nonlinearities)
     layer_sizes = [input_size] + hidden_sizes + [output_size]
-    weight_len = sum(layer_sizes[i] * layer_sizes[i+1] for i in range(len(layer_sizes) - 1))
-    alpha_len = sum(layer_sizes[i+1] * num_nonlinearities for i in range(len(layer_sizes) - 1))
+    weight_len = sum(layer_sizes[i] * layer_sizes[i+1] for i in range(len(layer_sizes)-1))
+    alpha_len = sum(layer_sizes[i+1] * num_nl for i in range(len(layer_sizes)-1))
 
     args = [
         loma_ir.Arg("X", loma_ir.Array(loma_ir.Struct("_dfloat", []), static_size=input_size), loma_ir.In()),
@@ -226,70 +229,58 @@ def param_kan_forward_diff(diff_func_id, input_size, output_size, hidden_sizes, 
         loma_ir.Arg("A", loma_ir.Array(loma_ir.Float(), static_size=alpha_len), loma_ir.In()),
         loma_ir.Arg("Y", loma_ir.Array(loma_ir.Struct("_dfloat", []), static_size=output_size), loma_ir.Out())
     ]
-
     body = []
-    X = loma_ir.Var("X")
-    input_vals = [loma_ir.StructAccess(loma_ir.ArrayAccess(X, loma_ir.ConstInt(i), t=loma_ir.Struct("_dfloat", [])), "val", t=loma_ir.Float()) for i in range(input_size)]
-    input_dvals = [loma_ir.StructAccess(loma_ir.ArrayAccess(X, loma_ir.ConstInt(i), t=loma_ir.Struct("_dfloat", [])), "dval", t=loma_ir.Float()) for i in range(input_size)]
 
-    prev_vals, prev_dvals = input_vals, input_dvals
+    X = loma_ir.Var("X")
+    prev_vals = [loma_ir.StructAccess(loma_ir.ArrayAccess(X, loma_ir.ConstInt(i), t=loma_ir.Struct("_dfloat", [])), "val", t=loma_ir.Float()) for i in range(input_size)]
+    prev_dvals = [loma_ir.StructAccess(loma_ir.ArrayAccess(X, loma_ir.ConstInt(i), t=loma_ir.Struct("_dfloat", [])), "dval", t=loma_ir.Float()) for i in range(input_size)]
+
     weight_offset = 0
     alpha_offset = 0
-
-    for l in range(len(layer_sizes) - 1):
-        current_layer_size = layer_sizes[l]
-        next_layer_size = layer_sizes[l+1]
-
+    for l in range(len(layer_sizes)-1):
+        cur_size = layer_sizes[l]
+        nxt_size = layer_sizes[l+1]
         prev_vals, prev_dvals = build_param_kan_layer_forward_ir(
-            l, prev_vals, prev_dvals,
-            current_layer_size, next_layer_size,
-            nonlinearities,
-            loma_ir.Var("W"), loma_ir.Var("A"),
-            weight_offset, alpha_offset,
-            body
+            l, prev_vals, prev_dvals, cur_size, nxt_size,
+            nonlinearities, loma_ir.Var("W"), loma_ir.Var("A"),
+            weight_offset, alpha_offset, body
         )
-
-        weight_offset += current_layer_size * next_layer_size
-        alpha_offset += next_layer_size * num_nonlinearities
+        weight_offset += cur_size * nxt_size
+        alpha_offset += nxt_size * num_nl
 
     Y = loma_ir.Var("Y")
     for i in range(output_size):
-        y_access = loma_ir.ArrayAccess(Y, loma_ir.ConstInt(i), t=loma_ir.Struct("_dfloat", []))
-        body.append(loma_ir.Assign(loma_ir.StructAccess(y_access, "val", t=loma_ir.Float()), prev_vals[i]))
-        body.append(loma_ir.Assign(loma_ir.StructAccess(y_access, "dval", t=loma_ir.Float()), prev_dvals[i]))
+        cell = loma_ir.ArrayAccess(Y, loma_ir.ConstInt(i), t=loma_ir.Struct("_dfloat", []))
+        body.append(loma_ir.Assign(loma_ir.StructAccess(cell, "val", t=loma_ir.Float()), prev_vals[i]))
+        body.append(loma_ir.Assign(loma_ir.StructAccess(cell, "dval", t=loma_ir.Float()), prev_dvals[i]))
 
     return loma_ir.FunctionDef(diff_func_id, args, body, False, None)
-
 
 def create_param_kan_forward_diff(diff_func_id, structs, funcs, diff_structs, input_size, output_size, hidden_sizes, nonlinearities=None):
     if nonlinearities is None:
         nonlinearities = ['sigmoid', 'tanh', 'relu', 'leaky_relu', 'softplus', 'elu']
 
     key = (tuple(hidden_sizes), input_size, output_size, tuple(nonlinearities))
+    hash_key = hashlib.sha1(str(key).encode()).hexdigest()[:8]
+    template_name = f"d_kan_layer_{hash_key}"
 
     if '_dfloat' not in structs:
-        dfloat_struct = loma_ir.Struct(
-            '_dfloat',
-            [
-                loma_ir.MemberDef('val', loma_ir.Float()),
-                loma_ir.MemberDef('dval', loma_ir.Float())
-            ],
-            None
-        )
-        structs['_dfloat'] = dfloat_struct
-        diff_structs[loma_ir.Float()] = dfloat_struct
+        dfloat = loma_ir.Struct('_dfloat', [loma_ir.MemberDef('val', loma_ir.Float()), loma_ir.MemberDef('dval', loma_ir.Float())], None)
+        structs['_dfloat'] = dfloat
+        diff_structs[loma_ir.Float()] = dfloat
 
-    if key in STRUCT_CACHE:
-        cached_func = STRUCT_CACHE[key]
-    else:
-        cached_func = param_kan_forward_diff("__KAN_STRUCT_CACHE_TEMPLATE__", input_size, output_size, hidden_sizes, nonlinearities)
-        STRUCT_CACHE[key] = cached_func
+    if key not in STRUCT_CACHE:
+        STRUCT_CACHE[key] = param_kan_forward_diff(template_name, input_size, output_size, hidden_sizes, nonlinearities)
+        funcs[template_name] = STRUCT_CACHE[key]
 
-    # Always return a fresh clone of the cached template
-    return loma_ir.FunctionDef(
+    template = STRUCT_CACHE[key]
+    call = loma_ir.Call(template.id, [loma_ir.Var(arg.id, t=arg.t) for arg in template.args], t=None)
+    func_def = loma_ir.FunctionDef(
         id=diff_func_id,
-        args=cached_func.args,
-        body=[stmt for stmt in cached_func.body],
+        args=[loma_ir.Arg(arg.id, arg.t, arg.i) for arg in template.args],
+        body=list(template.body),
         is_simd=False,
         ret_type=None
     )
+    funcs[diff_func_id] = func_def
+    return func_def

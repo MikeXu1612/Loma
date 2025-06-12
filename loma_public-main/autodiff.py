@@ -3,6 +3,7 @@ ir.generate_asdl_file()
 import _asdl.loma as loma_ir
 import irmutator
 import forward_diff
+forward_diff.forward_diff_structural = {}
 import reverse_diff
 import irvisitor
 from kan_modules import kan_forward_diff  # Import the KAN forward differentiation module
@@ -261,6 +262,10 @@ def differentiate(structs : dict[str, loma_ir.Struct],
     kan_funcs = dict()
     
     for f in funcs.values():
+        if isinstance(f, loma_ir.FunctionDef):
+            continue
+        if isinstance(f, loma_ir.ForwardDiff) and f.primal_func in forward_diff.forward_diff_structural:
+            continue
         if isinstance(f, loma_ir.ForwardDiff):
             func_to_fwd[f.primal_func] = f.id
         elif isinstance(f, loma_ir.ReverseDiff):
@@ -343,6 +348,8 @@ def differentiate(structs : dict[str, loma_ir.Struct],
                 hidden_sizes,
                 nonlinearities
             )
+            # Register structural forward diff function to avoid expansion in AD
+            forward_diff.forward_diff_structural[kan_id] = func_to_fwd[kan_id]
 
 
             funcs[func_to_fwd[kan_id]] = fwd_diff_func
@@ -384,9 +391,21 @@ def differentiate(structs : dict[str, loma_ir.Struct],
             if f.primal_func in kan_funcs:
                 continue
                 
-            fwd_diff_func = forward_diff.forward_diff(\
-                f.id, structs, funcs, diff_structs,
-                funcs[f.primal_func], func_to_fwd)
+            if f.primal_func in forward_diff.forward_diff_structural:
+                fwd_diff_func = loma_ir.FunctionDef(
+                    id=f.id,
+                    args=funcs[f.primal_func].args,
+                    body=[loma_ir.CallStmt(
+                        loma_ir.Call(forward_diff.forward_diff_structural[f.primal_func],
+                                     [loma_ir.Var(arg.id, t=arg.t) for arg in funcs[f.primal_func].args],
+                                     t=None))],
+                    is_simd=False,
+                    ret_type=None
+                )
+            else:
+                fwd_diff_func = forward_diff.forward_diff(
+                    f.id, structs, funcs, diff_structs,
+                    funcs[f.primal_func], func_to_fwd)
             funcs[f.id] = fwd_diff_func
             import pretty_print
             print(f'\nForward differentiation of function {f.id}:')
